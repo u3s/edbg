@@ -2,6 +2,7 @@
 
 -export([file/0
          , file/1
+         , tlist_to_file/2
          , fstart/0
          , fstart/1
          , fstart/2
@@ -49,6 +50,7 @@
 
 -ifdef(USE_COLORS).
 -define(info_msg(Fmt,Args), edbg_color_srv:info_msg(Fmt,Args)).
+-define(info_msg(IoDevice, Fmt,Args), io:format(IoDevice, Fmt,Args)).
 -define(att_msg(Fmt,Args), edbg_color_srv:att_msg(Fmt,Args)).
 -define(warn_msg(Fmt,Args), edbg_color_srv:warn_msg(Fmt,Args)).
 -define(err_msg(Fmt,Args), edbg_color_srv:err_msg(Fmt,Args)).
@@ -60,6 +62,7 @@
 -define(edbg_color_srv_init(), edbg_color_srv:init()).
 -else.
 -define(info_msg(Fmt,Args), io:format(Fmt,Args)).
+-define(info_msg(IoDevice, Fmt,Args), io:format(IoDevice, Fmt,Args)).
 -define(att_msg(Fmt,Args), io:format(Fmt,Args)).
 -define(warn_msg(Fmt,Args), io:format(Fmt,Args)).
 -define(err_msg(Fmt,Args), io:format(Fmt,Args)).
@@ -80,7 +83,7 @@
           level = maps:new(),  % Key=<pid> , Val=<level>
           at = 1,
           current = 1,
-          page = 20,
+          page = 100000,
           send_receive = true, % do (not) show send/receive msgs
           memory = true        % do (not) show memory info
          }).
@@ -122,6 +125,23 @@ file(Fname) ->
             call(start_my_tracer(), {load_trace_data,
                                      binary_to_term(Tdata)}),
             tlist();
+        Error ->
+            Error
+    catch
+        _:Err ->
+            {error, Err}
+    end.
+
+tlist_to_file(Fname, Out) ->
+    catch stop_trace(),
+    catch edbg_file_tracer:stop(),
+    try file:read_file(Fname) of
+        {ok, Tdata} ->
+            %% We expect Tdata to be a list of trace tuples as
+            %% a binary in the external term form.
+            call(start_my_tracer(), {load_trace_data,
+                                     binary_to_term(Tdata)}),
+            tlist_to_file(Out);
         Error ->
             Error
     catch
@@ -216,6 +236,13 @@ tlist() ->
     print_help(),
     ?mytracer ! at,
     ploop(Prompt).
+
+tlist_to_file(Out) ->
+    %% Self = self(),
+    %% Prompt = spawn_link(fun() -> prompt(Self) end),
+    %% print_help(),
+    ?mytracer ! {tlist_to_file, Out}.
+    %% ploop(Prompt).
 
 ploop(Prompt) ->
     receive
@@ -505,7 +532,11 @@ tloop(#t{trace_max = MaxTrace} = X, Tlist, Buf) ->
             NewAt = erlang:max(0, Tlist#tlist.at - Tlist#tlist.page - 1),
             NewTlist = list_trace(Tlist#tlist{at = NewAt}, Buf),
             ?MODULE:tloop(X, NewTlist, Buf);
-
+        {tlist_to_file, Out} ->
+            {ok, IoDevice} = file:open(Out, [write]),
+            NewTlist = list_trace(IoDevice, Tlist#tlist{at = 1}, Buf),
+            ok = file:close(IoDevice),
+            ?MODULE:tloop(X, NewTlist, Buf);
         {at, At} ->
             NewTlist = list_trace(Tlist#tlist{at = At}, Buf),
             ?MODULE:tloop(X, NewTlist, Buf);
@@ -736,6 +767,8 @@ field_size(_) ->
     "1". % shouldn't happen...
 
 list_trace(Tlist, Buf) ->
+    list_trace(standard_io, Tlist, Buf).
+list_trace(IoDevice, Tlist, Buf) ->
     maybe_put_first_timestamp(Buf),
     Fs = field_size(Buf),
     Zlist =
@@ -750,7 +783,7 @@ list_trace(Tlist, Buf) ->
                 when ?inside(At,N,Page) ->
                   Level = maps:get(Pid, LevelMap, 0),
                   MPid = mpid(MemoryP, Pid, As),
-                  ?info_msg("~"++Fs++".s:~s ~s ~p:~p/~p~n",
+                  ?info_msg(IoDevice, "~"++Fs++".s:~s ~s ~p:~p/~p~n",
                            [integer_to_list(N),pad(Level),MPid,M,F,length(A)]),
                   Z#tlist{level = maps:put(Pid, Level+1, LevelMap)};
 
@@ -762,7 +795,7 @@ list_trace(Tlist, Buf) ->
                 when ?inside(At,N,Page) ->
                   Level = maps:get(Pid, LevelMap, 0),
                   MPid = mpid(MemoryP, Pid, As),
-                  ?info_msg("~"++Fs++".s:~s ~s ~p:~p/~p - ~p~n",
+                  ?info_msg(IoDevice, "~"++Fs++".s:~s ~s ~p:~p/~p - ~p~n",
                            [integer_to_list(N),pad(Level),MPid,M,F,length(A),
                             xts(TS)]),
                   Z#tlist{level = maps:put(Pid, Level+1, LevelMap)};
@@ -796,7 +829,7 @@ list_trace(Tlist, Buf) ->
                      page = Page} = Z)
                 when ?inside(At,N,Page) ->
                   Level = maps:get(FromPid, LevelMap, 0),
-                  ?info_msg("~"++Fs++".s:~s >>> Send(~p) -> To(~p)  ~s~n",
+                  ?info_msg(IoDevice, "~"++Fs++".s:~s >>> Send(~p) -> To(~p)  ~s~n",
                             [integer_to_list(N),pad(Level),
                              FromPid,ToPid,truncate(Msg)]),
                   Z;
@@ -811,7 +844,7 @@ list_trace(Tlist, Buf) ->
                      page = Page} = Z)
                 when ?inside(At,N,Page) ->
                   Level = maps:get(ToPid, LevelMap, 0),
-                  ?info_msg("~"++Fs++".s:~s <<< Receive(~p)  ~s~n",
+                  ?info_msg(IoDevice, "~"++Fs++".s:~s <<< Receive(~p)  ~s~n",
                             [integer_to_list(N),pad(Level),
                              ToPid,truncate(Msg)]),
                   Z;

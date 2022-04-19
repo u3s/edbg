@@ -44,6 +44,7 @@
          id/0,
          it/3,
          lab/0,
+         tlist_to_file/2,
          load_all_breakpoints/0,
          ml/1,
          ml/2,
@@ -116,6 +117,9 @@ file() ->
 
 file(Fname) ->
     edbg_tracer:file(Fname).
+
+tlist_to_file(In, Out) ->
+    edbg_tracer:tlist_to_file(In, Out).
 
 fstart() ->
     edbg_tracer:fstart().
